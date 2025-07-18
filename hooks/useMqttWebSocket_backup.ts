@@ -49,40 +49,30 @@ export interface MqttData {
   lastUpdate: Date;
 }
 
-// 🔍 Función para validar formato ESP32 de ocupación
+// 🔍 Función para validar formato ESP32
 const isValidESP32Format = (rawData: string): boolean => {
   return rawData.startsWith('OCC:') && rawData.endsWith(';');
 };
 
-// 🚪 Función para validar formato de barreras (nuevo formato: BAR:1:0:2:0;)
+// 🚪 Función para validar formato de barreras
 const isValidBarrierFormat = (rawData: string): boolean => {
-  return rawData.startsWith('BAR:') && rawData.endsWith(';');
+  return (rawData.startsWith('BAR1:') || rawData.startsWith('BAR2:')) && rawData.endsWith(';');
 };
 
-// 🚪 Función para procesar datos de barreras (nuevo formato: BAR:1:0:2:0;)
-const processBarrierData = (rawData: string): Array<{gateType: 'entry' | 'exit', isOpen: boolean}> => {
+// 🚪 Función para procesar datos de barreras
+const processBarrierData = (rawData: string): {gateType: 'entry' | 'exit', isOpen: boolean} | null => {
   if (!isValidBarrierFormat(rawData)) {
-    return [];
+    return null;
   }
 
-  // Extraer datos sin prefijo BAR: y sufijo ;
-  const dataSection = rawData.slice(4, -1); // Remove "BAR:" and ";"
-  const pairs = dataSection.split(':');
-  const results: Array<{gateType: 'entry' | 'exit', isOpen: boolean}> = [];
+  const dataSection = rawData.slice(0, -1); // Remove ";"
+  const [barrierType, stateStr] = dataSection.split(':');
+  const state = parseInt(stateStr);
 
-  // Procesar en pares (id:estado)
-  for (let i = 0; i < pairs.length - 1; i += 2) {
-    const barrierId = parseInt(pairs[i]);
-    const barrierState = parseInt(pairs[i + 1]);
+  const gateType = barrierType === 'BAR1' ? 'entry' : 'exit';
+  const isOpen = state === 1;
 
-    if (barrierId === 1 || barrierId === 2) {
-      const gateType = barrierId === 1 ? 'entry' : 'exit';
-      const isOpen = barrierState === 1;
-      results.push({ gateType, isOpen });
-    }
-  }
-
-  return results;
+  return { gateType, isOpen };
 };
 
 // 🔧 Función para extraer pares de datos ESP32
@@ -111,18 +101,6 @@ const updateParkingSpace = (space: ParkingSpace, isOccupied: boolean): ParkingSp
     distance: isOccupied ? Math.floor(Math.random() * 10 + 5) : Math.floor(Math.random() * 15 + 25),
     change_detected: space.occupied !== isOccupied,
     previous_state: space.occupied,
-  };
-};
-
-// 🚪 Función para actualizar estado de barrera
-const updateGateStatus = (currentGate: GateStatus, isOpen: boolean): GateStatus => {
-  const newStatus = isOpen ? 'open' : 'closed';
-  return {
-    ...currentGate,
-    status: newStatus,
-    timestamp: new Date().toISOString(),
-    servo_angle: isOpen ? 90 : 0,
-    action: isOpen ? 'opening' : 'closing',
   };
 };
 
@@ -192,85 +170,17 @@ export const useMqttWebSocket = () => {
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [connectionAttempts, setConnectionAttempts] = useState(0);
 
-  // 🔍 Función para procesar datos RAW del ESP32 (ocupación: OCC:1:1:2:0:3:0;)
-  const processESP32RawData = (rawData: string, newData: MqttData) => {
-    if (!isValidESP32Format(rawData)) {
-      console.log('⚠️ Formato de ocupación ESP32 no reconocido:', rawData);
-      return;
-    }
-
-    // Extraer y procesar datos
-    const dataSection = rawData.slice(4, -1);
-    const spacePairs = extractESP32Pairs(dataSection);
-
-    // Aplicar cambios y recopilar información
-    const changes: Array<{wasOccupied: boolean, isOccupied: boolean}> = [];
-
-    spacePairs.forEach(({ spaceId, isOccupied }) => {
-      const spaceIndex = spaceId - 1;
-      const oldSpace = newData.parkingSpaces[spaceIndex];
-      const wasOccupied = oldSpace.occupied;
-
-      newData.parkingSpaces[spaceIndex] = updateParkingSpace(oldSpace, isOccupied);
-
-      if (wasOccupied !== isOccupied) {
-        changes.push({ wasOccupied, isOccupied });
-        console.log(`🚗 ESP32 - Espacio ${spaceId}: ${isOccupied ? 'OCUPADO' : 'LIBRE'}`);
-      }
-    });
-
-    // Actualizar estadísticas
-    newData.systemStats = calculateStats(newData.parkingSpaces, newData.systemStats, changes);
-
-    const totalOccupied = newData.systemStats.occupiedSpaces;
-    const occupancyRate = newData.systemStats.occupancyRate;
-    console.log(`📊 ESP32 - Ocupación: ${totalOccupied}/3 (${occupancyRate}%)`);
-  };
-
-  // 🚪 Función para procesar datos RAW de barreras (nuevo formato: BAR:1:0:2:0;)
-  const processBarrierRawData = (rawData: string, newData: MqttData) => {
-    const barrierInfoArray = processBarrierData(rawData);
-
-    if (barrierInfoArray.length === 0) {
-      console.log('⚠️ Formato de barrera ESP32 no reconocido:', rawData);
-      return;
-    }
-
-    // Procesar cada barrera
-    barrierInfoArray.forEach(({ gateType, isOpen }) => {
-      const oldGate = newData.gates[gateType];
-      const wasOpen = oldGate.status === 'open';
-
-      // Actualizar estado de la barrera
-      newData.gates[gateType] = updateGateStatus(oldGate, isOpen);
-
-      // Log solo si hay cambio
-      if (wasOpen !== isOpen) {
-        const barrierName = gateType === 'entry' ? 'ENTRADA' : 'SALIDA';
-        const statusText = isOpen ? 'ABIERTA' : 'CERRADA';
-        console.log(`🚪 ESP32 - Barrera de ${barrierName}: ${statusText}`);
-      }
-    });
-  };
-
   const processMessage = (topic: string, parsedPayload: any) => {
     setData(prev => {
       const newData = { ...prev };
 
-      // 📡 Procesar datos RAW del ESP32 directamente
+      // � Procesar datos RAW del ESP32 directamente
       if (topic === 'esp32/data') {
         const rawData = typeof parsedPayload === 'string' ? parsedPayload : parsedPayload.toString();
         console.log('📡 Procesando datos ESP32 RAW:', rawData);
 
         try {
-          // Verificar si es dato de ocupación (OCC) o barrera (BAR)
-          if (isValidESP32Format(rawData)) {
-            processESP32RawData(rawData, newData);
-          } else if (isValidBarrierFormat(rawData)) {
-            processBarrierRawData(rawData, newData);
-          } else {
-            console.log('⚠️ Formato de datos no reconocido:', rawData);
-          }
+          processESP32RawData(rawData, newData);
         } catch (error) {
           console.error('❌ Error procesando datos ESP32:', error);
         }
@@ -279,7 +189,7 @@ export const useMqttWebSocket = () => {
         return newData;
       }
 
-      // 🚗 Actualizar espacios de estacionamiento (del procesador ESP32)
+      // �🚗 Actualizar espacios de estacionamiento (del procesador ESP32)
       if (topic.startsWith('parking/spaces/') && topic.endsWith('/status')) {
         const spaceId = parseInt(topic.split('/')[2]);
         const spaceIndex = newData.parkingSpaces.findIndex(space => space.id === spaceId);
@@ -342,6 +252,74 @@ export const useMqttWebSocket = () => {
       newData.lastUpdate = new Date();
       return newData;
     });
+  };
+
+  // 🔍 Función para procesar datos RAW del ESP32 (formato: OCC:1:1:2:0:3:0;)
+  const processESP32RawData = (rawData: string, newData: MqttData) => {
+    // Verificar formato básico
+    if (!rawData.startsWith('OCC:') || !rawData.endsWith(';')) {
+      console.log('⚠️ Formato de datos ESP32 no reconocido:', rawData);
+      return;
+    }
+
+    // Extraer datos sin prefijo y sufijo
+    const dataSection = rawData.slice(4, -1); // Remove "OCC:" and ";"
+    const pairs = dataSection.split(':');
+
+    // Procesar en pares (id:estado)
+    const changes: Array<{spaceId: number, isOccupied: boolean, wasOccupied: boolean}> = [];
+
+    for (let i = 0; i < pairs.length - 1; i += 2) {
+      const spaceId = parseInt(pairs[i]);
+      const occupiedState = parseInt(pairs[i + 1]);
+
+      if (spaceId >= 1 && spaceId <= 3) {
+        const spaceIndex = spaceId - 1;
+        const wasOccupied = newData.parkingSpaces[spaceIndex].occupied;
+        const isOccupied = occupiedState === 1;
+
+        // Actualizar el espacio directamente
+        newData.parkingSpaces[spaceIndex] = {
+          ...newData.parkingSpaces[spaceIndex],
+          occupied: isOccupied,
+          timestamp: new Date().toISOString(),
+          distance: isOccupied ? Math.floor(Math.random() * 10 + 5) : Math.floor(Math.random() * 15 + 25),
+          change_detected: wasOccupied !== isOccupied,
+          previous_state: wasOccupied,
+        };
+
+        if (wasOccupied !== isOccupied) {
+          changes.push({ spaceId, isOccupied, wasOccupied });
+          console.log(`� ESP32 - Espacio ${spaceId}: ${isOccupied ? 'OCUPADO' : 'LIBRE'}`);
+        }
+      }
+    }
+
+    // Actualizar estadísticas del sistema basadas en los cambios
+    const totalOccupied = newData.parkingSpaces.filter(space => space.occupied).length;
+    const totalAvailable = 3 - totalOccupied;
+    const occupancyRate = Math.round((totalOccupied / 3) * 100);
+
+    // Actualizar entradas diarias si hay nuevas ocupaciones
+    let newEntries = newData.systemStats.dailyEntries;
+    changes.forEach(change => {
+      if (!change.wasOccupied && change.isOccupied) {
+        newEntries++;
+      }
+    });
+
+    newData.systemStats = {
+      ...newData.systemStats,
+      occupiedSpaces: totalOccupied,
+      availableSpaces: totalAvailable,
+      occupancyRate: occupancyRate,
+      dailyEntries: newEntries,
+      timestamp: new Date().toISOString(),
+      lastEntry: changes.some(c => !c.wasOccupied && c.isOccupied) ? new Date().toISOString() : newData.systemStats.lastEntry,
+      lastExit: changes.some(c => c.wasOccupied && !c.isOccupied) ? new Date().toISOString() : newData.systemStats.lastExit,
+    };
+
+    console.log(`📊 ESP32 - Ocupación actualizada: ${totalOccupied}/3 (${occupancyRate}%)`);
   };
 
   const scheduleReconnect = () => {

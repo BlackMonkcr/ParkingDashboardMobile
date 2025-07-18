@@ -39,12 +39,13 @@ const connectToMqtt = () => {
     console.log('✅ Bridge conectado al broker MQTT');
     isConnectedToMqtt = true;
 
-    // Suscribirse a todos los topics del sistema
+    // Suscribirse a todos los topics del sistema ESP32
     const topics = [
-      'parking/spaces/+/status',
-      'parking/gates/+/status',
-      'parking/stats/summary',
-      'parking/analytics/hourly'
+      'esp32/data',                    // Datos del ESP32 real
+      'parking/spaces/+/status',       // Estado de espacios (del procesador)
+      'parking/gates/+/status',        // Estado de portones (del procesador)
+      'parking/system/stats',          // Estadísticas del sistema (del procesador)
+      'parking/hourly/data',           // Datos por hora (del procesador)
     ];
 
     topics.forEach(topic => {

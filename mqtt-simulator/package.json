@@ -8,7 +8,7 @@
     "broker": "node broker.js",
     "publisher": "node publisher.js",
     "bridge": "node ws-bridge.js",
-    "dev": "concurrently \"npm run broker\" \"npm run bridge\" \"npm run publisher\"",
+    "dev": "concurrently \"npm run broker\" \"npm run bridge\"",
     "install-deps": "npm install"
   },
   "keywords": [],

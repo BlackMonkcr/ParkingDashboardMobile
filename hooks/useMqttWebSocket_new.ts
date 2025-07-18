@@ -54,35 +54,25 @@ const isValidESP32Format = (rawData: string): boolean => {
   return rawData.startsWith('OCC:') && rawData.endsWith(';');
 };
 
-// 🚪 Función para validar formato de barreras (nuevo formato: BAR:1:0:2:0;)
+// 🚪 Función para validar formato de barreras
 const isValidBarrierFormat = (rawData: string): boolean => {
-  return rawData.startsWith('BAR:') && rawData.endsWith(';');
+  return (rawData.startsWith('BAR1:') || rawData.startsWith('BAR2:')) && rawData.endsWith(';');
 };
 
-// 🚪 Función para procesar datos de barreras (nuevo formato: BAR:1:0:2:0;)
-const processBarrierData = (rawData: string): Array<{gateType: 'entry' | 'exit', isOpen: boolean}> => {
+// 🚪 Función para procesar datos de barreras
+const processBarrierData = (rawData: string): {gateType: 'entry' | 'exit', isOpen: boolean} | null => {
   if (!isValidBarrierFormat(rawData)) {
-    return [];
+    return null;
   }
 
-  // Extraer datos sin prefijo BAR: y sufijo ;
-  const dataSection = rawData.slice(4, -1); // Remove "BAR:" and ";"
-  const pairs = dataSection.split(':');
-  const results: Array<{gateType: 'entry' | 'exit', isOpen: boolean}> = [];
+  const dataSection = rawData.slice(0, -1); // Remove ";"
+  const [barrierType, stateStr] = dataSection.split(':');
+  const state = parseInt(stateStr);
 
-  // Procesar en pares (id:estado)
-  for (let i = 0; i < pairs.length - 1; i += 2) {
-    const barrierId = parseInt(pairs[i]);
-    const barrierState = parseInt(pairs[i + 1]);
+  const gateType = barrierType === 'BAR1' ? 'entry' : 'exit';
+  const isOpen = state === 1;
 
-    if (barrierId === 1 || barrierId === 2) {
-      const gateType = barrierId === 1 ? 'entry' : 'exit';
-      const isOpen = barrierState === 1;
-      results.push({ gateType, isOpen });
-    }
-  }
-
-  return results;
+  return { gateType, isOpen };
 };
 
 // 🔧 Función para extraer pares de datos ESP32
@@ -227,30 +217,28 @@ export const useMqttWebSocket = () => {
     console.log(`📊 ESP32 - Ocupación: ${totalOccupied}/3 (${occupancyRate}%)`);
   };
 
-  // 🚪 Función para procesar datos RAW de barreras (nuevo formato: BAR:1:0:2:0;)
+  // 🚪 Función para procesar datos RAW de barreras (BAR1:0; o BAR2:1;)
   const processBarrierRawData = (rawData: string, newData: MqttData) => {
-    const barrierInfoArray = processBarrierData(rawData);
+    const barrierInfo = processBarrierData(rawData);
 
-    if (barrierInfoArray.length === 0) {
+    if (!barrierInfo) {
       console.log('⚠️ Formato de barrera ESP32 no reconocido:', rawData);
       return;
     }
 
-    // Procesar cada barrera
-    barrierInfoArray.forEach(({ gateType, isOpen }) => {
-      const oldGate = newData.gates[gateType];
-      const wasOpen = oldGate.status === 'open';
+    const { gateType, isOpen } = barrierInfo;
+    const oldGate = newData.gates[gateType];
+    const wasOpen = oldGate.status === 'open';
 
-      // Actualizar estado de la barrera
-      newData.gates[gateType] = updateGateStatus(oldGate, isOpen);
+    // Actualizar estado de la barrera
+    newData.gates[gateType] = updateGateStatus(oldGate, isOpen);
 
-      // Log solo si hay cambio
-      if (wasOpen !== isOpen) {
-        const barrierName = gateType === 'entry' ? 'ENTRADA' : 'SALIDA';
-        const statusText = isOpen ? 'ABIERTA' : 'CERRADA';
-        console.log(`🚪 ESP32 - Barrera de ${barrierName}: ${statusText}`);
-      }
-    });
+    // Log solo si hay cambio
+    if (wasOpen !== isOpen) {
+      const barrierName = gateType === 'entry' ? 'ENTRADA' : 'SALIDA';
+      const statusText = isOpen ? 'ABIERTA' : 'CERRADA';
+      console.log(`🚪 ESP32 - Barrera de ${barrierName}: ${statusText}`);
+    }
   };
 
   const processMessage = (topic: string, parsedPayload: any) => {
